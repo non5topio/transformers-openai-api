@@ -2,6 +2,7 @@ import json
 import time
 import torch
 import logging
+import threading
 from typing import Any, Callable, Mapping, Optional
 from flask import Flask, make_response, request, abort
 from flask.json import jsonify
@@ -15,13 +16,16 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 models = {}
+id_lock = threading.Lock()
 id = 0
 metrics: Optional[Metrics]
 
 
 def get_best_device() -> str:
-    """Automatically detect the best available device: MPS (Mac) -> CPU"""
-    if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+    """Automatically detect the best available device: CUDA -> MPS (Mac) -> CPU"""
+    if torch.cuda.is_available():
+        return 'cuda'
+    elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
         return 'mps'
     else:
         return 'cpu'
