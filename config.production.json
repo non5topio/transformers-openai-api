@@ -1,0 +1,25 @@
+{
+    "HOST": "0.0.0.0",
+    "PORT": 8001,
+    "ENV": "production",
+    "BEARER_TOKENS": ["your-secret-token-here"],
+    "MAX_REQUEST_SIZE": "16MB",
+    "RATE_LIMIT": "100/hour",
+    "MODELS": {
+        "text-davinci-003": {
+            "NAME": "google/flan-t5-base",
+            "TYPE": "Seq2Seq",
+            "MODEL_CONFIG": {
+                "device_map": "auto",
+                "torch_dtype": "float16"
+            },
+            "MODEL_DEVICE": null,
+            "GENERATE_CONFIG": {
+                "max_new_tokens": 1000,
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "do_sample": true
+            }
+        }
+    }
+}

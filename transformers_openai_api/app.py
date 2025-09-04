@@ -2,6 +2,7 @@ import json
 import time
 import torch
 import logging
+import threading
 from typing import Any, Callable, Mapping, Optional
 from flask import Flask, make_response, request, abort
 from flask.json import jsonify
@@ -15,13 +16,16 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 models = {}
+id_lock = threading.Lock()
 id = 0
 metrics: Optional[Metrics]
 
 
 def get_best_device() -> str:
-    """Automatically detect the best available device: MPS (Mac) -> CPU"""
-    if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+    """Automatically detect the best available device: CUDA -> MPS (Mac) -> CPU"""
+    if torch.cuda.is_available():
+        return 'cuda'
+    elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
         return 'mps'
     else:
         return 'cpu'
@@ -276,70 +280,60 @@ def engine_completion(model_name: str):
     return completion(model_name)
 
 
+def validate_message_content(content):
+    """Validate and normalize message content"""
+    if isinstance(content, str):
+        return content.strip()
+    elif isinstance(content, list):
+        # Extract text from multimodal content
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get('type') == 'text':
+                    text_parts.append(item.get('text', ''))
+                # Note: Image content types are not supported in this implementation
+                elif item.get('type') == 'image_url':
+                    # Log warning about unsupported content type
+                    app.logger.warning("Image content not supported, skipping")
+            elif isinstance(item, str):
+                text_parts.append(item)
+        return ' '.join(text_parts).strip()
+    else:
+        return str(content).strip()
+
+
 @app.route('/v1/chat/completions', methods=['POST'])
-@check_token
 def v1_chat_completions():
     try:
-        # Validate request
-        if not request.json:
-            return make_response(jsonify({
-                'error': {
-                    'message': 'Request body must be JSON',
-                    'type': 'invalid_request_error',
-                    'code': 'invalid_json'
-                }
-            }), 400)
-
+        data = request.get_json()
+        
         # Validate required fields
-        is_valid, error_msg = validate_request_data(request.json, ['model', 'messages'])
-        if not is_valid:
-            return make_response(jsonify({
-                'error': {
-                    'message': error_msg,
-                    'type': 'invalid_request_error',
-                    'code': 'invalid_request'
-                }
-            }), 400)
-
-        # Sanitize request data
-        try:
-            data = sanitize_chat_request(request.json)
-        except ValueError as ve:
-            return make_response(jsonify({
-                'error': {
-                    'message': str(ve),
-                    'type': 'invalid_request_error',
-                    'code': 'invalid_request'
-                }
-            }), 400)
-
-        model_name = data.get('model')
+        if 'messages' not in data:
+            return jsonify({'error': 'Missing required field: messages'}), 400
         
-        if not model_name or model_name not in models:
-            return make_response(jsonify({
-                'error': {
-                    'message': f'Model {model_name} not found. Available models: {list(models.keys())}',
-                    'type': 'invalid_request_error',
-                    'code': 'model_not_found'
-                }
-            }), 404)
-        
+        model_name = data.get('model', 'gpt-3.5-turbo')
         messages = data.get('messages', [])
-        
-        # Convert messages to a single prompt with better formatting
-        prompt_parts = []
+        max_tokens = data.get('max_tokens', 150)
+        temperature = data.get('temperature', 0.7)
+        stream = data.get('stream', False)
+
+        # Convert messages to prompt
+        prompt = ""
         for message in messages:
-            role = message['role']
-            content = message['content'].strip()
+            if not isinstance(message, dict):
+                return jsonify({'error': 'Invalid message format'}), 400
+                
+            role = message.get('role', 'user')
+            content = validate_message_content(message.get('content', ''))
             
             if role == 'system':
-                prompt_parts.append(f"System: {content}")
+                prompt += f"System: {content}\n"
             elif role == 'user':
-                prompt_parts.append(f"Human: {content}")
+                prompt += f"User: {content}\n"
             elif role == 'assistant':
-                prompt_parts.append(f"Assistant: {content}")
-        
-        prompt = "\n\n".join(prompt_parts) + "\n\nAssistant:"
+                prompt += f"Assistant: {content}\n"
+
+        prompt += "Assistant:"
         
         # Create completion request with validated parameters
         completion_request = {
